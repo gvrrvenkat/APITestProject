@@ -1,0 +1,438 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Net;
+using System.Net.Http;
+using System.Text;
+using System.Text.RegularExpressions;
+using System.Threading.Tasks;
+using System.Xml;
+using Gherkin;
+using Microsoft.VisualStudio.Services.DelegatedAuthorization;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
+using NUnit.Framework;
+using RestSharp;
+
+
+//using System.Runtime.Serialization.Json;
+
+namespace BossTestFramework.Controllers
+{
+    public class RestAPI:TestBase
+    {
+        private enum HttpVerb
+        {
+            GET,
+            POST,
+            PATCH,
+            DELETE
+        }
+
+        public string defaultUri(string product)
+        {
+            if (product.Equals("Trash"))
+            {
+                return "https://sat-boss-trashapi.realpage.com";
+            } else if (product.Equals("Water"))
+            {
+                return "https://sat-boss-waterapi.realpage.com";
+            }
+            else
+            {
+                return "https://sat-boss-energyapi.realpage.com";
+            }
+            
+        }
+
+
+        public HttpWebRequest httpWebRequest { get; set; }
+        public HttpWebResponse httpWebResponse { get; set; }
+        public JObject json { get; set; }
+        public JArray jsonArray { get; set; }
+        public string jsonString { get; set; }
+
+
+
+        public string id
+        {
+            get
+            {
+                ReadData(new List<string> { "Id" });
+                return id;
+            }
+        }
+
+        private int responseStatusCode { get; set; }
+
+        /// <summary>
+        /// Execute a POST request.
+        /// </summary>
+        /// <param name="data">Message body data.</param>
+        /// <param name="apiUri">URI for POST request.</param>
+        /// <param name="logPayLoads">Set this to false in case of big text size or documents uploads</param>
+        /// <Author></Author>
+
+        public void PostData(string data, string apiUri, bool logPayLoads = true, int expectedResponseStatusCode = 201, string CustomStepDescription = null, string strEtag = null)
+        {
+            ExecuteRequest(HttpVerb.POST, data, apiUri, expectedResponseStatusCode, CustomStepDescription, etag: strEtag);
+        }
+
+        private void ExecuteRequest(HttpVerb httpVerb, string data, string apiUri, int expectedResponseStatusCode, string CustomStepDescription, bool parseJson = true, string etag = null, string WSLPortal = null,string product=null)
+        {
+
+            CustomStepDescription = CustomStepDescription ?? $"Execute a {httpVerb.ToString()} request to API";
+
+            try
+            {
+                Request(httpVerb, data, apiUri, parseJson: parseJson, etag: etag,product: product);
+            }
+            catch (Exception e)
+            {
+                if (responseStatusCode == expectedResponseStatusCode)
+                {
+                }
+                else
+                {
+                    throw;
+                }
+            }
+
+        }
+
+
+        /// <summary>
+        /// Execute a Get request
+        /// </summary>
+        /// <param name="apiUri">URI for GET request</param>
+        /// 
+        public void GetData(string apiUri, bool parseJson = true, int expectedResponseStatusCode = 200, string CustomStepDescription = null,string product=null)
+        {
+            ExecuteRequest(HttpVerb.GET, null, apiUri, expectedResponseStatusCode, CustomStepDescription,true,null, null,product);
+        }
+
+        /// <summary>
+        /// Execute a  PATCH request.
+        /// </summary>
+        /// <param name="data">Message body data</param>
+        /// <param name="apiUri">URI for PATCH request</param>
+
+        public void PatchData(string data, string apiUri, string strETag = null, int expectedResponseStatusCode = 200, string CustomStepDescription = null)
+        {
+            strETag = strETag;
+            ExecuteRequest(HttpVerb.PATCH, data, apiUri, expectedResponseStatusCode, CustomStepDescription, etag: strETag);
+        }
+
+        /// <summary>
+        /// Validate the JSON response tokens
+        /// </summary>
+        /// <param name="data">Dictionary with Key = tokenName, Value = expected Value for token</param>
+        /// <param name="validationType"></param>
+        /// <Author></Author>
+        public void ValidateTokens(Dictionary<string, string> data)
+        {
+
+            foreach (var tag in data.Keys)
+            {
+                Assert.IsTrue((ReadTokens(tag).Trim()).Equals(data[tag]));
+
+
+            }
+
+        }
+
+        //Comparing Token and Token Path in Json and both should be same.
+        public bool TokenPresent(string tokenName)
+        {
+            return (GetToken(tokenName).AncestorsAndSelf().ElementAt(1) as JProperty).Path.Equals(tokenName);
+        }
+        public JToken GetToken(string tokenName)
+        {
+            JToken jToken = null;
+            if (!tokenName.Contains(" "))
+            {
+                jToken = json[tokenName] ?? json.SelectToken("$.." + tokenName);
+                if (jToken == null)
+                {
+                    foreach (var token in tokenName.Split('.'))
+                    {
+                        jToken = jToken ?? json;
+                        jToken = jToken.SelectToken(token);
+                    }
+                }
+            }
+
+            jToken = jToken ?? FindTokens(json, tokenName);
+
+            if (jToken == null)
+            {
+                throw new Exception("Json response doesn't have element : " + tokenName);
+            }
+            return jToken;
+        }
+
+        /// <summary>
+        /// Will return the number of collections from the JSON array response
+        /// </summary>
+        /// <returns></returns>
+        public int GetJSONArrayCount()
+        {
+            return jsonArray.Count;
+        }
+
+        public int GetNumberOfValues(string tokenName)
+        {
+            return GetToken(tokenName).Count();
+        }
+
+        /// <summary>
+        /// Write token values to results log from JSON response. No validation is done here, only the token value is added to logs.
+        /// </summary>
+        /// <param name="data">Token to read from JSON</param>
+        /// <Author></Author>
+        public void ReadData(List<string> data)
+        {
+            foreach (var tag in data)
+            {
+
+                var tagValue = ReadTokens(tag);
+
+            }
+
+        }
+
+        /// <summary>
+        /// Execute a DELETE request.
+        /// </summary>
+        /// <param name="apiUri">URI for DELETE request</param>
+        public void DeleteData(string apiUri, int expectedResponseStatusCode = 204, string CustomStepDescription = null)
+        {
+            ExecuteRequest(HttpVerb.DELETE, null, apiUri, expectedResponseStatusCode, CustomStepDescription);
+        }
+
+        /// <summary>
+        /// Read Tokens from the JSON response
+        /// </summary>
+        /// <param name="tokenName"> token to read</param>
+        /// <returns>Value of token if present, else will return null</returns>
+
+        public string ReadTokens(string tokenName)
+        {
+            JToken jToken = null;
+            if (!tokenName.Contains(" "))
+            {
+                if (json != null)
+                {
+                    jToken = json[tokenName] ?? json.SelectToken("$.." + tokenName);
+                    if (jToken == null)
+                    {
+                        foreach (var token in tokenName.Split('.'))
+                        {
+                            jToken = jToken ?? json;
+                            jToken = jToken.SelectToken(token);
+                        }
+                    }
+                }
+                else
+                {
+                    var pattern = @"\[(.*?)\]";
+                    var match = Regex.Match(tokenName, pattern);
+                    var index = Convert.ToInt32(match.Groups[1].Value);
+
+                    jToken = jsonArray[index][tokenName];
+
+                    if (jToken == null)
+                    {
+                        var items = tokenName.Split('.');
+                        if (items.Length > 2)
+                        {
+                            jToken = jsonArray[index][items[1]];
+                            jToken = jToken.SelectToken("$.." + items[2]);
+                        }
+                        else
+                        {
+                            foreach (var token in tokenName.Split('.'))
+                            {
+                                jToken = jsonArray[index][token];
+                            }
+                        }
+
+                    }
+                }
+
+            }
+
+            jToken = jToken ?? FindTokens(json, tokenName);
+
+            if (jToken == null)
+            {
+                throw new Exception("Json response doesn't have element : " + tokenName);
+            }
+
+            // Date format gets updated to system time, following code will return as it is seen in Json
+            if (jToken.Type == JTokenType.Date)
+            {
+                JsonSerializerSettings jsonSerializerSettings = new JsonSerializerSettings
+                {
+                    DateFormatHandling = DateFormatHandling.IsoDateFormat,
+                    DateTimeZoneHandling = DateTimeZoneHandling.Local,
+                    DateParseHandling = DateParseHandling.DateTimeOffset,
+                };
+                // Convert to required JSon format
+                var tokenValueInJsonFormat = JsonConvert.SerializeObject(jToken, jsonSerializerSettings).Replace("\"", "");
+                return tokenValueInJsonFormat;
+            }
+
+            return jToken.ToString();
+        }
+
+        /// <summary>
+        /// Recursive function that calls itself to loop through every token to match name and return ites value
+        /// </summary>
+        /// <param name="containerToken"> loops through every token</param>
+        /// <param name="name">token name</param>
+        /// <returns>Token value if found else returns null</returns>
+        /// <Author>Sankar</Author>
+        private JToken FindTokens(JToken containerToken, string name)
+        {
+            foreach (JProperty child in containerToken.Children<JProperty>())
+            {
+                if (child.Name == name)
+                {
+                    return child.Value;
+                }
+                var tokenValue = FindTokens(child, name);
+                if (tokenValue != null)
+                {
+                    return tokenValue;
+                }
+            }
+
+            foreach (JToken child in containerToken.Children())
+            {
+                var tokenValue = FindTokens(child, name);
+                if (tokenValue != null)
+                {
+                    return tokenValue;
+                }
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Execute a request on API
+        /// </summary>
+        /// <param name="RequestType">Request method</param>
+        /// <param name="reqeuestBody">data to be sent as request body</param>
+        /// <param name="uri">URI for request</param>
+        /// <param name="etag"></param>
+        ///
+        private void Request(HttpVerb RequestType, string requestBody = null, string uri = null, string etag = null, bool parseJson = true, string product=null)
+        {
+            json = null;
+
+            string log = string.Empty;
+
+            // Creates an HttpWebRequest for the specified URL.
+            ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
+            httpWebRequest = null;
+            httpWebRequest = (HttpWebRequest)WebRequest.Create(uri ?? defaultUri(product));
+            httpWebRequest.Method = RequestType.ToString();
+
+            log = $"\r\n{RequestType.ToString()} {uri} HTTP/1.1";
+
+            Accesstoken s = new Accesstoken();
+            //string a1 = s.TokenfromAPI();
+            string a1 = getAcessTokenThroughAPI();
+
+            httpWebRequest.Headers.Add("Authorization: Bearer " + a1);
+                   
+            httpWebRequest.ContentLength = 0;
+
+            if (!string.IsNullOrWhiteSpace(etag))
+            {
+                httpWebRequest.Headers.Add("If-Match:" + etag);
+                log += $"\r\nIf-Match: {etag}";
+            }
+
+            // Request body
+            if (!string.IsNullOrEmpty(requestBody))
+            {
+                httpWebRequest.ContentLength = requestBody.Length;
+
+                var body = Regex.Replace(requestBody, @"\s+", string.Empty);
+                log += $"\r\n\n{body}";
+
+                using (StreamWriter swJSONPayload = new StreamWriter(httpWebRequest.GetRequestStream()))
+                {
+                    swJSONPayload.Write(requestBody);
+                    swJSONPayload.Close();
+                }
+            }
+
+            // Call API
+            try
+            {
+                // Sends the HttpWebRequest and waits for a response.
+                httpWebResponse = null;
+                httpWebResponse = (HttpWebResponse)httpWebRequest.GetResponse();
+                responseStatusCode = (int)httpWebResponse.StatusCode;
+
+                //Proecess the response stream...JSON,XML
+                string strResponseValue = string.Empty;
+
+                // Json validation is required then reach the code
+                if (parseJson)
+                {
+                    using (Stream responseStream = httpWebResponse.GetResponseStream())
+                    {
+                        if (responseStream != null)
+                        {
+                            using (StreamReader streamReader = new StreamReader(responseStream))
+                            {
+                                using (JsonReader jsonReader = new JsonTextReader(streamReader))
+                                {
+                                    JsonSerializer jsonSerializer = new JsonSerializer
+                                    {
+                                        DateFormatHandling = DateFormatHandling.IsoDateFormat,
+                                        DateTimeZoneHandling = DateTimeZoneHandling.Local,
+                                        DateParseHandling = DateParseHandling.DateTimeOffset,
+                                    };
+
+                                    var obj = jsonSerializer.Deserialize(jsonReader);
+                                    if (obj is JArray)
+                                        jsonArray = (JArray)obj;
+                                    else
+                                        json = (JObject)obj;
+                                }
+                            }
+                        }
+                    }
+                }
+
+            }
+            catch (WebException ex)
+            {
+                var ftpResponse = (HttpWebResponse)ex.Response;
+                responseStatusCode = (int)ftpResponse.StatusCode;
+
+                throw;
+            }
+            catch (Exception ex)
+            {
+
+                throw;
+            }
+            finally
+            {
+                if (httpWebResponse != null)
+                {
+                    httpWebResponse.Close();
+                }
+
+            }
+        }
+    }
+}
+
